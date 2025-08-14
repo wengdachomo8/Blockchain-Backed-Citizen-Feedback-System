@@ -249,3 +249,102 @@
 
 (define-read-only (get-weighted-votes (proposal-id uint))
   (ok (map-get? WeightedProposalVotes proposal-id)))
+
+(define-constant ERR-INVALID-DELEGATE (err u107))
+(define-constant ERR-CANNOT-DELEGATE-TO-SELF (err u108))
+(define-constant ERR-NO-DELEGATION (err u109))
+
+(define-map CitizenDelegations
+  principal
+  {delegate: principal, active: bool, delegation-block: uint}
+)
+
+(define-map DelegateVoters
+  principal
+  {total-delegated: uint}
+)
+
+(define-public (delegate-vote (delegate principal))
+  (let ((citizen tx-sender))
+    (asserts! (not (is-eq citizen delegate)) ERR-CANNOT-DELEGATE-TO-SELF)
+    (asserts! (is-some (map-get? Citizens delegate)) ERR-INVALID-DELEGATE)
+    (asserts! (is-some (map-get? Citizens citizen)) ERR-NOT-REGISTERED)
+    
+    (let ((old-delegation (map-get? CitizenDelegations citizen))
+          (delegate-data (default-to {total-delegated: u0} 
+                                   (map-get? DelegateVoters delegate))))
+      
+      (match old-delegation
+        old-del (let ((old-delegate (get delegate old-del)))
+                  (map-set DelegateVoters old-delegate
+                    (merge (default-to {total-delegated: u0} 
+                                     (map-get? DelegateVoters old-delegate))
+                           {total-delegated: (- (get total-delegated 
+                                                (default-to {total-delegated: u0} 
+                                                          (map-get? DelegateVoters old-delegate))) u1)})))
+        true)
+      
+      (map-set CitizenDelegations citizen 
+        {delegate: delegate, active: true, delegation-block: stacks-block-height})
+      (map-set DelegateVoters delegate 
+        (merge delegate-data {total-delegated: (+ (get total-delegated delegate-data) u1)}))
+      (ok true))))
+
+(define-public (revoke-delegation)
+  (let ((citizen tx-sender)
+        (delegation (unwrap! (map-get? CitizenDelegations citizen) ERR-NO-DELEGATION)))
+    (asserts! (get active delegation) ERR-NO-DELEGATION)
+    
+    (let ((delegate (get delegate delegation))
+          (delegate-data (default-to {total-delegated: u0} 
+                                   (map-get? DelegateVoters delegate))))
+      (map-set CitizenDelegations citizen 
+        (merge delegation {active: false}))
+      (map-set DelegateVoters delegate 
+        (merge delegate-data 
+               {total-delegated: (if (> (get total-delegated delegate-data) u0)
+                                   (- (get total-delegated delegate-data) u1)
+                                   u0)}))
+      (ok true))))
+
+(define-public (submit-delegated-vote (proposal-id uint) (vote bool))
+  (let ((delegate tx-sender)
+        (proposal (unwrap! (map-get? Proposals proposal-id) ERR-INVALID-PROPOSAL))
+        (vote-key {proposal-id: proposal-id, voter: delegate})
+        (delegate-power (default-to {total-delegated: u0} 
+                                  (map-get? DelegateVoters delegate)))
+        (total-votes (+ u1 (get total-delegated delegate-power)))
+        (vote-weight (update-citizen-reputation delegate VOTE-REPUTATION-REWARD))
+        (current-weighted (default-to {weighted-yes-votes: u0, weighted-no-votes: u0}
+                                    (map-get? WeightedProposalVotes proposal-id))))
+    (asserts! (is-some (map-get? Citizens delegate)) ERR-NOT-REGISTERED)
+    (asserts! (is-none (map-get? CitizenVotes vote-key)) ERR-ALREADY-VOTED)
+    (asserts! (<= stacks-block-height (get end-block proposal)) ERR-PROPOSAL-EXPIRED)
+    
+    (map-set CitizenVotes vote-key {voted: true, vote: vote})
+    (map-set Proposals proposal-id
+      (merge proposal 
+        {yes-votes: (if vote 
+                      (+ (get yes-votes proposal) total-votes)
+                      (get yes-votes proposal)),
+         no-votes: (if (not vote)
+                    (+ (get no-votes proposal) total-votes)
+                    (get no-votes proposal))}))
+    (map-set WeightedProposalVotes proposal-id
+      {
+        weighted-yes-votes: (if vote
+                              (+ (get weighted-yes-votes current-weighted) 
+                                 (* vote-weight total-votes))
+                              (get weighted-yes-votes current-weighted)),
+        weighted-no-votes: (if (not vote)
+                             (+ (get weighted-no-votes current-weighted) 
+                                (* vote-weight total-votes))
+                             (get weighted-no-votes current-weighted))
+      })
+    (ok true)))
+
+(define-read-only (get-delegation (citizen principal))
+  (ok (map-get? CitizenDelegations citizen)))
+
+(define-read-only (get-delegate-power (delegate principal))
+  (ok (map-get? DelegateVoters delegate)))
