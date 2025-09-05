@@ -348,3 +348,110 @@
 
 (define-read-only (get-delegate-power (delegate principal))
   (ok (map-get? DelegateVoters delegate)))
+
+(define-constant ERR-AMENDMENT-ALREADY-EXISTS (err u110))
+(define-constant ERR-AMENDMENT-NOT-FOUND (err u111))
+(define-constant ERR-AMENDMENT-PERIOD-ENDED (err u112))
+(define-constant ERR-INSUFFICIENT-REPUTATION (err u113))
+
+(define-data-var amendment-counter uint u0)
+
+(define-map ProposalAmendments
+  uint
+  {
+    proposal-id: uint,
+    amendment-text: (string-ascii 500),
+    creator: principal,
+    support-votes: uint,
+    created-block: uint,
+    status: (string-ascii 20)
+  }
+)
+
+(define-map AmendmentSupport
+  {amendment-id: uint, supporter: principal}
+  {supported: bool, support-block: uint}
+)
+
+(define-map ProposalAmendmentList
+  uint
+  {amendment-count: uint}
+)
+
+(define-private (get-amendment-deadline (proposal-end-block uint))
+  (if (> proposal-end-block u50)
+      (- proposal-end-block u20)
+      proposal-end-block))
+
+(define-private (has-amendment-permission (citizen principal))
+  (let ((reputation (map-get? CitizenReputation citizen)))
+    (match reputation
+      rep-data (>= (get reputation-points rep-data) u50)
+      false)))
+
+(define-public (create-proposal-amendment (proposal-id uint) (amendment-text (string-ascii 500)))
+  (let ((citizen tx-sender)
+        (proposal (unwrap! (map-get? Proposals proposal-id) ERR-INVALID-PROPOSAL))
+        (new-amendment-id (+ (var-get amendment-counter) u1))
+        (amendment-deadline (get-amendment-deadline (get end-block proposal)))
+        (proposal-amendments (default-to {amendment-count: u0} 
+                                       (map-get? ProposalAmendmentList proposal-id))))
+    (asserts! (is-some (map-get? Citizens citizen)) ERR-NOT-REGISTERED)
+    (asserts! (has-amendment-permission citizen) ERR-INSUFFICIENT-REPUTATION)
+    (asserts! (<= stacks-block-height amendment-deadline) ERR-AMENDMENT-PERIOD-ENDED)
+    
+    (map-set ProposalAmendments new-amendment-id
+      {
+        proposal-id: proposal-id,
+        amendment-text: amendment-text,
+        creator: citizen,
+        support-votes: u0,
+        created-block: stacks-block-height,
+        status: "active"
+      })
+    (map-set ProposalAmendmentList proposal-id 
+      {amendment-count: (+ (get amendment-count proposal-amendments) u1)})
+    (var-set amendment-counter new-amendment-id)
+    (ok new-amendment-id)))
+
+(define-public (support-amendment (amendment-id uint))
+  (let ((supporter tx-sender)
+        (amendment (unwrap! (map-get? ProposalAmendments amendment-id) ERR-AMENDMENT-NOT-FOUND))
+        (proposal (unwrap! (map-get? Proposals (get proposal-id amendment)) ERR-INVALID-PROPOSAL))
+        (support-key {amendment-id: amendment-id, supporter: supporter})
+        (amendment-deadline (get-amendment-deadline (get end-block proposal))))
+    (asserts! (is-some (map-get? Citizens supporter)) ERR-NOT-REGISTERED)
+    (asserts! (is-none (map-get? AmendmentSupport support-key)) ERR-ALREADY-VOTED)
+    (asserts! (<= stacks-block-height amendment-deadline) ERR-AMENDMENT-PERIOD-ENDED)
+    (asserts! (is-eq (get status amendment) "active") ERR-INVALID-PROPOSAL)
+    
+    (map-set AmendmentSupport support-key 
+      {supported: true, support-block: stacks-block-height})
+    (map-set ProposalAmendments amendment-id
+      (merge amendment {support-votes: (+ (get support-votes amendment) u1)}))
+    (ok true)))
+
+(define-public (apply-amendment (amendment-id uint))
+  (let ((amendment (unwrap! (map-get? ProposalAmendments amendment-id) ERR-AMENDMENT-NOT-FOUND))
+        (proposal (unwrap! (map-get? Proposals (get proposal-id amendment)) ERR-INVALID-PROPOSAL)))
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    (asserts! (>= (get support-votes amendment) u5) ERR-INSUFFICIENT-REPUTATION)
+    (asserts! (is-eq (get status amendment) "active") ERR-INVALID-PROPOSAL)
+    
+    (map-set Proposals (get proposal-id amendment)
+      (merge proposal {description: (get amendment-text amendment)}))
+    (map-set ProposalAmendments amendment-id
+      (merge amendment {status: "applied"}))
+    (ok true)))
+
+(define-read-only (get-amendment (amendment-id uint))
+  (ok (map-get? ProposalAmendments amendment-id)))
+
+(define-read-only (get-amendment-support (amendment-id uint) (supporter principal))
+  (ok (map-get? AmendmentSupport {amendment-id: amendment-id, supporter: supporter})))
+
+(define-read-only (get-proposal-amendments (proposal-id uint))
+  (ok (map-get? ProposalAmendmentList proposal-id)))
+
+(define-read-only (can-create-amendment (citizen principal))
+  (ok (has-amendment-permission citizen)))
