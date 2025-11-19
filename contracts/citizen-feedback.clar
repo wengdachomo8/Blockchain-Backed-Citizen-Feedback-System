@@ -18,6 +18,8 @@
 (define-constant ERR-INSUFFICIENT-REPUTATION (err u113))
 (define-constant ERR-INVALID-DATE-RANGE (err u114))
 (define-constant ERR-NO-ANALYTICS-DATA (err u115))
+(define-constant ERR-PROPOSAL-NOT-ENDED (err u116))
+(define-constant ERR-ALREADY-FINALIZED (err u117))
 
 ;; Contract variables
 (define-data-var admin principal tx-sender)
@@ -25,6 +27,7 @@
 (define-data-var category-counter uint u0)
 (define-data-var amendment-counter uint u0)
 (define-data-var analytics-counter uint u0)
+(define-data-var approval-tracker-counter uint u0)
 
 ;; Reputation constants
 (define-constant VOTE-REPUTATION-REWARD u10)
@@ -94,13 +97,22 @@
 
 (define-map CitizenDelegations
   principal
-  {delegate: principal, active: bool, delegation-block: uint}
-)
+  {delegate: principal, active: bool, delegation-block: uint})
 
 (define-map DelegateVoters
   principal
-  {total-delegated: uint}
-)
+  {total-delegated: uint})
+
+(define-map ProposalApprovals
+  uint
+  {
+    proposal-id: uint,
+    approved: bool,
+    finalized: bool,
+    approval-block: uint,
+    total-votes: uint,
+    approval-threshold: uint
+  })
 
 ;; === FEEDBACK ANALYTICS DASHBOARD ===
 ;; Independent feature for comprehensive feedback system analytics
@@ -447,3 +459,45 @@
 
 (define-read-only (get-proposal-category (proposal-id uint))
   (ok (map-get? ProposalCategories proposal-id)))
+
+(define-public (finalize-proposal-approval (proposal-id uint))
+  (let ((proposal (unwrap! (map-get? Proposals proposal-id) ERR-INVALID-PROPOSAL))
+        (approval-id (+ (var-get approval-tracker-counter) u1)))
+    (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+    (asserts! (> stacks-block-height (get end-block proposal)) ERR-PROPOSAL-NOT-ENDED)
+    
+    (let ((total-votes (+ (get yes-votes proposal) (get no-votes proposal)))
+          (approval-threshold (/ total-votes u2))
+          (is-approved (if (> total-votes u0) (>= (get yes-votes proposal) approval-threshold) false)))
+      
+      (map-set ProposalApprovals approval-id
+        {
+          proposal-id: proposal-id,
+          approved: is-approved,
+          finalized: true,
+          approval-block: stacks-block-height,
+          total-votes: total-votes,
+          approval-threshold: approval-threshold
+        })
+      
+      (map-set Proposals proposal-id
+        (merge proposal
+          {status: (if is-approved "approved" "rejected")}))
+      
+      (var-set approval-tracker-counter approval-id)
+      (ok approval-id))))
+
+(define-read-only (get-proposal-approval (approval-id uint))
+  (ok (map-get? ProposalApprovals approval-id)))
+
+(define-read-only (get-latest-approval)
+  (let ((latest-id (var-get approval-tracker-counter)))
+    (if (> latest-id u0)
+        (ok (map-get? ProposalApprovals latest-id))
+        (err ERR-NO-ANALYTICS-DATA))))
+
+(define-read-only (is-proposal-approved (proposal-id uint))
+  (let ((proposal (map-get? Proposals proposal-id)))
+    (match proposal
+      prop (ok (is-eq (get status prop) "approved"))
+      (err ERR-INVALID-PROPOSAL))))
