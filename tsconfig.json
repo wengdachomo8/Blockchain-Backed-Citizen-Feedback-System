@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["vitest/globals", "@hirosystems/clarinet-sdk/vitest"]
+  },
+  "include": ["tests/**/*", "vitest.config.js"],
+  "exclude": ["node_modules"]
+}

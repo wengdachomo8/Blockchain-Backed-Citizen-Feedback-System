@@ -1,0 +1,25 @@
+[project]
+name = 'Blockchain-Backed-Citizen-Feedback-System'
+description = 'A comprehensive blockchain-based citizen feedback system with analytics'
+authors = ['wengdachomo8@gmail.com']
+telemetry = true
+cache_dir = '.cache'
+requirements = []
+
+[contracts.citizen-feedback]
+path = 'contracts/citizen-feedback.clar'
+clarity_version = 3
+epoch = 3.1
+
+[repl.analysis]
+passes = ['check_checker']
+
+[repl.analysis.check_checker]
+strict = false
+trusted_sender = false
+trusted_caller = false
+callee_filter = false
+
+[repl.remote_data]
+enabled = false
+api_url = 'https://api.hiro.so'
